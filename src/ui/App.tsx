@@ -1,7 +1,10 @@
 import { SyntaxStyle, type ScrollBoxRenderable, type SelectOption } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { blockAt, splitBlocks } from "../blocks.ts";
+import { reanchor, type Comment } from "../Comments.ts";
 import type { Store, ViewState } from "../ViewState.ts";
+import { blockId, DocBlocks } from "./DocBlocks.tsx";
 import { palette, styles } from "./theme.ts";
 
 type Focus = "sidebar" | "doc";
@@ -44,6 +47,23 @@ export function App({ store }: { readonly store: Store }) {
 	const sidebar = sidebarPref ?? (width >= 64 && s.files.length > 1);
 	const [raw, setRaw] = useState(false);
 	const [flash, setFlash] = useState(false);
+	const [cursor, setCursor] = useState(0);
+	const [composing, setComposing] = useState(false);
+	const [showNotes, setShowNotes] = useState(true);
+
+	const blocks = useMemo(() => splitBlocks(s.content), [s.content]);
+	const threads = useMemo(() => {
+		const lines = s.content.split("\n");
+		return s.comments
+			.filter((c) => !c.resolved)
+			.reduce((m, c) => {
+				const i = blockAt(blocks, reanchor(lines, c));
+				return new Map(m).set(i, [...(m.get(i) ?? []), c]);
+			}, new Map<number, ReadonlyArray<Comment>>());
+	}, [s.comments, s.content, blocks]);
+	const commented = useMemo(() => [...threads.keys()].toSorted((a, b) => a - b), [threads]);
+	const openCount = s.comments.filter((c) => !c.resolved).length;
+	const at = Math.min(cursor, Math.max(0, blocks.length - 1));
 
 	// briefly mark the header when the document reloads under us
 	useEffect(() => {
@@ -57,7 +77,15 @@ export function App({ store }: { readonly store: Store }) {
 	const docKey = s.current._tag === "File" ? s.current.path : s.current._tag;
 	useEffect(() => {
 		if (s.current._tag !== "Live") scroll.current?.scrollTo(0);
+		setCursor(0);
+		setComposing(false);
 	}, [docKey]);
+
+	const moveCursor = (i: number) => {
+		const next = Math.min(Math.max(0, i), Math.max(0, blocks.length - 1));
+		setCursor(next);
+		scroll.current?.scrollChildIntoView(blockId(next));
+	};
 
 	const open = (delta: number) => {
 		if (s.files.length === 0) return;
@@ -67,6 +95,21 @@ export function App({ store }: { readonly store: Store }) {
 	};
 
 	useKeyboard((key) => {
+		if (composing) {
+			if (key.name === "escape") setComposing(false);
+			return;
+		}
+		const ch = key.sequence;
+		if ((key.name === "j" && key.shift) || ch === "J") return moveCursor(at + 1);
+		if ((key.name === "k" && key.shift) || ch === "K") return moveCursor(at - 1);
+		if (ch === "}") return moveCursor(commented.find((i) => i > at) ?? commented[0] ?? at);
+		if (ch === "{") return moveCursor(commented.findLast((i) => i < at) ?? commented.at(-1) ?? at);
+		if (key.name === "c" && !raw && s.docPath !== undefined && blocks.length > 0) return setComposing(true);
+		if (key.name === "x") {
+			const ids = (threads.get(at) ?? []).map((c) => c.id);
+			return ids.length > 0 ? store.dispatch({ _tag: "Resolve", ids, resolved: true }) : undefined;
+		}
+		if (key.name === "a") return setShowNotes((v) => !v);
 		const page = Math.max(1, (scroll.current?.height ?? 20) - 2);
 		if (key.name === "q" || (key.ctrl && key.name === "c")) return store.dispatch({ _tag: "Quit" });
 		if (key.name === "tab") return setFocus((f) => (f === "doc" && sidebar ? "sidebar" : "doc"));
@@ -107,6 +150,7 @@ export function App({ store }: { readonly store: Store }) {
 				<text fg={flash ? palette.flash : palette.fg}>{titleOf(s)}</text>
 				<box style={{ flexGrow: 1 }} />
 				{raw ? <text fg={palette.warn}>raw </text> : null}
+				{openCount > 0 ? <text fg={palette.flash}>{`● ${openCount} ${showNotes ? "" : "hidden "}`}</text> : null}
 				<text fg={live ? (s.streaming ? palette.flash : palette.ok) : palette.dim}>{status}</text>
 			</box>
 
@@ -148,7 +192,7 @@ export function App({ store }: { readonly store: Store }) {
 
 				<scrollbox
 					ref={scroll}
-					focused={focus === "doc"}
+					focused={focus === "doc" && !composing}
 					stickyScroll={live}
 					stickyStart={live ? "bottom" : "top"}
 					style={{
@@ -165,22 +209,44 @@ export function App({ store }: { readonly store: Store }) {
 					) : s.content === "" ? (
 						<text fg={palette.dim}>{live ? "waiting for content…" : "(empty)"}</text>
 					) : (
-						<markdown
-							content={s.content}
-							syntaxStyle={syntaxStyle}
+						<DocBlocks
+							blocks={blocks}
+							threads={threads}
+							cursor={at}
+							showNotes={showNotes}
 							streaming={live && s.streaming}
-							conceal
-							fg={palette.fg}
-							tableOptions={{ style: "grid", widthMode: "content", cellPaddingX: 1, borderColor: palette.border }}
+							syntaxStyle={syntaxStyle}
 						/>
 					)}
 				</scrollbox>
 			</box>
 
+			{composing ? (
+				<box
+					style={{ height: 3, border: true, borderStyle: "rounded", borderColor: palette.flash, paddingLeft: 1, backgroundColor: palette.side }}
+					title={` comment on line ${blocks[at]?.start ?? 1} · enter save · esc cancel `}
+					titleAlignment="left"
+				>
+					<input
+						focused
+						placeholder="what should change here?"
+						backgroundColor={palette.side}
+						focusedBackgroundColor={palette.side}
+						textColor={palette.fg}
+						onSubmit={(submitted: unknown) => {
+							const value = typeof submitted === "string" ? submitted : "";
+							const line = blocks[at]?.start;
+							if (line !== undefined && value.trim() !== "") store.dispatch({ _tag: "AddComment", line, body: value });
+							setComposing(false);
+						}}
+					/>
+				</box>
+			) : null}
+
 			{/* footer */}
 			<box style={{ flexDirection: "row", height: 1, paddingLeft: 1, backgroundColor: palette.bar }}>
 				<text fg={palette.dim}>
-					{width < 70 ? "j/k scroll  [ ] file  s side  r raw  q quit" : "j/k scroll  space/u/d page  g/G top/end  [ ] prev/next  tab focus  s sidebar  r raw  q quit"}
+					{width < 70 ? "j/k scroll  J/K block  c comment  [ ] file  q quit" : "j/k scroll  J/K block  c comment  x resolve  { } notes  a hide  [ ] file  s sidebar  r raw  q quit"}
 				</text>
 			</box>
 		</box>

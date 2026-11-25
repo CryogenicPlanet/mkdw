@@ -25,8 +25,37 @@ mkdw close
 | `[` / `]`      | previous / next file   |
 | `tab`          | focus sidebar          |
 | `s`            | toggle sidebar         |
+| `J` / `K`      | block cursor           |
+| `c`            | comment on block       |
+| `x`            | resolve block's notes  |
+| `{` / `}`      | prev / next comment    |
+| `a`            | hide / show notes      |
 | `r`            | raw source             |
 | `q`            | quit                   |
+
+## Comments
+
+Review notes like [hunk](https://github.com/modem-dev/hunk)'s: anchored to a
+block of the document, drawn inline as cards, readable and writable by agents.
+
+In the panel: `J`/`K` moves the block cursor, `c` comments on that block,
+`x` resolves its notes, `{`/`}` jumps between commented blocks, and `a` hides
+or shows notes.
+
+From an agent (`live` means the doc that `mkdw push` streamed):
+
+```sh
+mkdw comments                       # open comments everywhere
+mkdw comments plan.md --wait        # block until the user leaves a new comment
+mkdw comment plan.md --match "## Rollout" --author claude "Missing a rollback step"
+mkdw comment plan.md --line 12 "…"
+mkdw comment resolve <id>
+mkdw comment rm <id>
+```
+
+Comments live in `~/.local/state/mkdw/comments/`, one JSON file per document.
+Each one stores its line and the text of that line, so it follows the line
+when the document is edited.
 
 ## How the panel works
 
@@ -40,4 +69,5 @@ mkdw close
 
 - [x] render markdown
 - [x] live reload
+- [x] comments (user + agent)
 - [ ] diff view of what changed since last render

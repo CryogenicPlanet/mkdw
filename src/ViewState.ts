@@ -1,3 +1,5 @@
+import type { Comment } from "./Comments.ts";
+
 export type Current =
 	| { readonly _tag: "File"; readonly path: string }
 	| { readonly _tag: "Live"; readonly title: string }
@@ -17,10 +19,15 @@ export interface ViewState {
 	readonly controlled: boolean;
 	/** bumps on every reload so the UI can flash "updated" */
 	readonly revision: number;
+	/** file the comments belong to (live docs use their live.md) */
+	readonly docPath: string | undefined;
+	readonly comments: ReadonlyArray<Comment>;
 }
 
 export type Intent =
 	| { readonly _tag: "Open"; readonly path: string }
+	| { readonly _tag: "AddComment"; readonly line: number; readonly body: string }
+	| { readonly _tag: "Resolve"; readonly ids: ReadonlyArray<string>; readonly resolved: boolean }
 	| { readonly _tag: "Quit" };
 
 /** What the React tree sees: a synchronous snapshot plus a change feed. */

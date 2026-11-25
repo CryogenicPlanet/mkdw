@@ -2,6 +2,7 @@ import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { createElement } from "react";
 import { Data, Deferred, Effect, Option, Path, Queue, Stream, SubscriptionRef } from "effect";
+import { Comments } from "./Comments.ts";
 import { Control, type Target } from "./Control.ts";
 import { App } from "./ui/App.tsx";
 import type { Current, Intent, Store, ViewState } from "./ViewState.ts";
@@ -20,6 +21,14 @@ export const runViewer = (opts: ViewerOptions) =>
 		const workspace = yield* Workspace;
 		const control = yield* Control;
 		const path = yield* Path.Path;
+		const comments = yield* Comments;
+
+		const docPathOf = (current: Current): string | undefined =>
+			current._tag === "File"
+				? current.path
+				: current._tag === "Live"
+					? Option.match(opts.control, { onNone: () => undefined, onSome: (dir) => control.files(dir).live })
+					: undefined;
 
 		const root = yield* workspace.resolveRoot(opts.input);
 		const initial: ViewState = {
@@ -31,6 +40,8 @@ export const runViewer = (opts: ViewerOptions) =>
 			error: undefined,
 			controlled: Option.isSome(opts.control),
 			revision: 0,
+			docPath: undefined,
+			comments: [],
 		};
 		const state = yield* SubscriptionRef.make(initial);
 
@@ -54,6 +65,8 @@ export const runViewer = (opts: ViewerOptions) =>
 		const show = (current: Current, streaming = false) =>
 			Effect.gen(function* () {
 				const loaded = yield* contentFor(current);
+				const docPath = docPathOf(current);
+				const docComments = docPath === undefined ? [] : yield* comments.list(docPath);
 				// a file outside the current root re-roots the sidebar at its directory
 				const reroot =
 					current._tag === "File" && path.relative((yield* SubscriptionRef.get(state)).root, current.path).startsWith("..")
@@ -68,6 +81,8 @@ export const runViewer = (opts: ViewerOptions) =>
 					...loaded,
 					current,
 					streaming,
+					docPath,
+					comments: docComments,
 					root: Option.getOrElse(reroot, () => s.root),
 					files: Option.getOrElse(files, () => s.files),
 					revision: s.revision + 1,
@@ -152,10 +167,54 @@ export const runViewer = (opts: ViewerOptions) =>
 		const intents = yield* Queue.unbounded<Intent>();
 		const quit = yield* Deferred.make<void>();
 		yield* Queue.take(intents).pipe(
-			Effect.flatMap((intent) =>
-				intent._tag === "Quit" ? Deferred.succeed(quit, undefined) : show({ _tag: "File", path: intent.path }),
-			),
+			Effect.flatMap((intent) => handle(intent)),
 			Effect.forever,
+			Effect.forkScoped,
+		);
+
+		function handle(intent: Intent) {
+			return Effect.gen(function* () {
+				const s = yield* SubscriptionRef.get(state);
+				switch (intent._tag) {
+					case "Quit":
+						return yield* Deferred.succeed(quit, undefined);
+					case "Open":
+						return yield* show({ _tag: "File", path: intent.path });
+					case "AddComment": {
+						if (s.docPath === undefined || intent.body.trim() === "") return;
+						const added = yield* comments.add({
+							file: s.docPath,
+							line: intent.line,
+							quote: s.content.split("\n")[intent.line - 1] ?? "",
+							body: intent.body.trim(),
+							author: process.env["USER"] ?? "you",
+							kind: "user",
+						});
+						return yield* SubscriptionRef.update(state, (p) =>
+							p.comments.some((c) => c.id === added.id) ? p : { ...p, comments: [...p.comments, added] },
+						);
+					}
+					case "Resolve":
+						if (s.docPath === undefined) return;
+						return yield* comments.setResolved(s.docPath, intent.ids, intent.resolved);
+				}
+			}).pipe(Effect.catchTag("CommentsError", (e) => SubscriptionRef.update(state, (p) => ({ ...p, error: e.message }))));
+		}
+
+		// keep comments in sync with their sidecar (agents write it too)
+		yield* SubscriptionRef.changes(state).pipe(
+			Stream.map((s) => s.docPath),
+			Stream.changes,
+			Stream.switchMap((doc) =>
+				doc === undefined
+					? Stream.empty
+					: comments.changes(doc).pipe(
+							Stream.mapEffect((cs) =>
+								SubscriptionRef.update(state, (s) => (s.docPath === doc ? { ...s, comments: cs } : s)),
+							),
+						),
+			),
+			Stream.runDrain,
 			Effect.forkScoped,
 		);
 
