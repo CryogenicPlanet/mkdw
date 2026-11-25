@@ -12,6 +12,8 @@ export interface ViewState {
 	readonly files: ReadonlyArray<string>;
 	readonly current: Current;
 	readonly content: string;
+	/** content as of when you opened it (or last marked it seen); the diff base */
+	readonly baseline: string;
 	/** true while `mkdw push` is still writing */
 	readonly streaming: boolean;
 	readonly error: string | undefined;
@@ -28,6 +30,7 @@ export type Intent =
 	| { readonly _tag: "Open"; readonly path: string }
 	| { readonly _tag: "AddComment"; readonly line: number; readonly body: string }
 	| { readonly _tag: "Resolve"; readonly ids: ReadonlyArray<string>; readonly resolved: boolean }
+	| { readonly _tag: "MarkSeen" }
 	| { readonly _tag: "Quit" };
 
 /** What the React tree sees: a synchronous snapshot plus a change feed. */

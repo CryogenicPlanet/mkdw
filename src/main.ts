@@ -9,7 +9,7 @@ import * as Rex from "./Rex.ts";
 import { runViewer } from "./Viewer.ts";
 import * as Workspace from "./Workspace.ts";
 
-const USAGE = `mkdw — a terminal markdown viewer that lives in a side panel
+const USAGE = `mkdw: a terminal markdown viewer that lives in a side panel
 
 Usage:
   mkdw [path]                 view a file or browse a directory here (= mkdw open)

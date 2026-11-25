@@ -8,6 +8,9 @@ import { App } from "./ui/App.tsx";
 import type { Current, Intent, Store, ViewState } from "./ViewState.ts";
 import { Workspace } from "./Workspace.ts";
 
+const sameDoc = (a: Current, b: Current): boolean =>
+	(a._tag === "File" && b._tag === "File" && a.path === b.path) || (a._tag === "Live" && b._tag === "Live");
+
 export class RendererError extends Data.TaggedError("RendererError")<{ readonly cause: unknown }> {}
 
 export interface ViewerOptions {
@@ -36,6 +39,7 @@ export const runViewer = (opts: ViewerOptions) =>
 			files: yield* workspace.list(root.dir),
 			current: root.initial === undefined ? { _tag: "Empty" } : { _tag: "File", path: root.initial },
 			content: "",
+			baseline: "",
 			streaming: false,
 			error: undefined,
 			controlled: Option.isSome(opts.control),
@@ -83,6 +87,8 @@ export const runViewer = (opts: ViewerOptions) =>
 					streaming,
 					docPath,
 					comments: docComments,
+					// re-showing the same file (e.g. `mkdw panel` after an edit) keeps the diff base
+					baseline: sameDoc(s.current, current) ? s.baseline : loaded.content,
 					root: Option.getOrElse(reroot, () => s.root),
 					files: Option.getOrElse(files, () => s.files),
 					revision: s.revision + 1,
@@ -194,6 +200,8 @@ export const runViewer = (opts: ViewerOptions) =>
 							p.comments.some((c) => c.id === added.id) ? p : { ...p, comments: [...p.comments, added] },
 						);
 					}
+					case "MarkSeen":
+						return yield* SubscriptionRef.update(state, (p) => ({ ...p, baseline: p.content }));
 					case "Resolve":
 						if (s.docPath === undefined) return;
 						return yield* comments.setResolved(s.docPath, intent.ids, intent.resolved);

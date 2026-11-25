@@ -1,6 +1,7 @@
 import { SyntaxStyle, type ScrollBoxRenderable, type SelectOption } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createTwoFilesPatch } from "diff";
 import { blockAt, splitBlocks } from "../blocks.ts";
 import { reanchor, type Comment } from "../Comments.ts";
 import type { Store, ViewState } from "../ViewState.ts";
@@ -52,6 +53,7 @@ export function App({ store }: { readonly store: Store }) {
 	const [sidebarPref, setSidebarPref] = useState<boolean | undefined>(undefined);
 	const sidebar = sidebarPref ?? (width >= 64 && s.files.length > 1);
 	const [raw, setRaw] = useState(false);
+	const [diffMode, setDiffMode] = useState(false);
 	const [flash, setFlash] = useState(false);
 	const [cursor, setCursor] = useState(0);
 	// block index the open comment box targets; undefined = not composing
@@ -71,6 +73,23 @@ export function App({ store }: { readonly store: Store }) {
 	}, [s.comments, s.content, blocks]);
 	const commented = useMemo(() => [...threads.keys()].toSorted((a, b) => a - b), [threads]);
 	const openCount = s.comments.filter((c) => !c.resolved).length;
+
+	// what changed since you opened the doc (or pressed m)
+	const dirty = s.baseline !== s.content && s.current._tag === "File";
+	const changed = useMemo(() => {
+		if (!dirty) return new Set<number>();
+		const before = new Set(splitBlocks(s.baseline).map((b) => b.raw));
+		return new Set(blocks.flatMap((b, i) => (before.has(b.raw) ? [] : [i])));
+	}, [dirty, s.baseline, blocks]);
+	const removed = useMemo(() => {
+		if (!dirty) return 0;
+		const now = new Set(blocks.map((b) => b.raw));
+		return splitBlocks(s.baseline).filter((b) => !now.has(b.raw)).length;
+	}, [dirty, s.baseline, blocks]);
+	const patchText = useMemo(
+		() => (diffMode && dirty ? createTwoFilesPatch("before", "now", s.baseline, s.content, "", "", { context: 3 }) : ""),
+		[diffMode, dirty, s.baseline, s.content],
+	);
 	const at = Math.min(cursor, Math.max(0, blocks.length - 1));
 
 	// briefly mark the header when the document reloads under us
@@ -160,6 +179,11 @@ export function App({ store }: { readonly store: Store }) {
 			return setFocus("doc");
 		}
 		if (key.name === "r") return setRaw((v) => !v);
+		if ((key.name === "d" && key.shift) || ch === "D") return setDiffMode((v) => !v);
+		if (key.name === "m") {
+			setDiffMode(false);
+			return store.dispatch({ _tag: "MarkSeen" });
+		}
 		if (key.name === "]" || key.sequence === "]") return open(1);
 		if (key.name === "[" || key.sequence === "[") return open(-1);
 		if (focus === "sidebar") return;
@@ -194,6 +218,12 @@ export function App({ store }: { readonly store: Store }) {
 				<text fg={flash ? palette.flash : palette.fg}>{titleOf(s)}</text>
 				<box style={{ flexGrow: 1 }} />
 				{raw ? <text fg={palette.warn}>raw </text> : null}
+				{diffMode ? <text fg={palette.warn}>diff </text> : null}
+				{dirty ? (
+					<text fg={palette.ok}>
+						{`● ${changed.size} changed${removed > changed.size ? ` · ${removed - changed.size} removed` : ""} `}
+					</text>
+				) : null}
 				{openCount > 0 ? <text fg={palette.flash}>{`● ${openCount} ${showNotes ? "" : "hidden "}`}</text> : null}
 				<text fg={live ? (s.streaming ? palette.flash : palette.ok) : palette.dim}>{status}</text>
 			</box>
@@ -249,6 +279,30 @@ export function App({ store }: { readonly store: Store }) {
 				>
 					{s.error !== undefined ? (
 						<text fg={palette.warn}>{s.error}</text>
+					) : diffMode ? (
+						dirty ? (
+							<diff
+								diff={patchText}
+								view={width >= 110 ? "split" : "unified"}
+								filetype="markdown"
+								syntaxStyle={syntaxStyle}
+								showLineNumbers
+								wrapMode="word"
+								fg={palette.fg}
+								addedBg="#0f2a1d"
+								removedBg="#2d1418"
+								addedContentBg="#0f2a1d"
+								removedContentBg="#2d1418"
+								contextBg={palette.bg}
+								contextContentBg={palette.bg}
+								addedSignColor={palette.ok}
+								removedSignColor="#ff6b7a"
+								lineNumberFg={palette.dim}
+								lineNumberBg={palette.bg}
+							/>
+						) : (
+							<text fg={palette.dim}>no changes since you opened it · D to go back</text>
+						)
 					) : raw ? (
 						<code content={s.content} filetype="markdown" syntaxStyle={syntaxStyle} />
 					) : s.content === "" ? (
@@ -257,6 +311,7 @@ export function App({ store }: { readonly store: Store }) {
 						<DocBlocks
 							blocks={blocks}
 							threads={threads}
+							changed={changed}
 							cursor={at}
 							showNotes={showNotes}
 							streaming={live && s.streaming}
@@ -295,7 +350,7 @@ export function App({ store }: { readonly store: Store }) {
 			{/* footer */}
 			<box style={{ flexDirection: "row", height: 1, paddingLeft: 1, backgroundColor: palette.bar }}>
 				<text fg={palette.dim}>
-					{width < 70 ? "j/k scroll  J/K block  c comment  [ ] file  q quit" : "j/k scroll  J/K block  c comment  x resolve  { } notes  a hide  [ ] file  s sidebar  r raw  q quit"}
+					{width < 70 ? "j/k scroll  J/K block  c comment  [ ] file  q quit" : "j/k scroll  J/K block  c comment  x resolve  { } notes  D diff  m seen  [ ] file  s sidebar  r raw  q quit"}
 				</text>
 			</box>
 		</box>

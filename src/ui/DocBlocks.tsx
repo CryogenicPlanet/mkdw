@@ -36,6 +36,8 @@ export function DocBlocks(props: {
 	readonly blocks: ReadonlyArray<Block>;
 	readonly threads: ReadonlyMap<number, ReadonlyArray<Comment>>;
 	readonly cursor: number;
+	/** blocks that changed since the diff baseline */
+	readonly changed: ReadonlySet<number>;
 	readonly showNotes: boolean;
 	readonly streaming: boolean;
 	readonly syntaxStyle: SyntaxStyle;
@@ -56,7 +58,13 @@ export function DocBlocks(props: {
 						style={{
 							flexDirection: "column",
 							border: ["left"],
-							borderColor: active ? palette.accent : thread.length > 0 ? palette.flash : palette.bg,
+							borderColor: active
+								? palette.accent
+								: thread.length > 0
+									? palette.flash
+									: props.changed.has(i)
+										? palette.ok
+										: palette.bg,
 							paddingLeft: 1,
 							marginBottom: 1,
 						}}
