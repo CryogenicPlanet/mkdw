@@ -127,6 +127,19 @@ Running `mkdw panel` on the doc that's already open keeps the snapshot. That way
 | `r` | Show the raw source |
 | `q` | Quit |
 
+## Agent skill
+
+`mkdw` ships with a skill that teaches your agent when to reach for the panel and how to run the review loop: open a doc, wait for your comments, act on them, and resolve them. It lives in [`skills/mkdw/SKILL.md`](skills/mkdw/SKILL.md).
+
+Install it for Claude Code with:
+
+```sh
+mkdw skill install                  # symlinks into ~/.claude/skills/mkdw
+mkdw skill install --dir ~/.agents/skills   # or any other skills directory
+```
+
+The install is a symlink, so pulling the repo updates the skill too. `mkdw skill show` prints it, and `mkdw status --json` tells an agent where the panel is and what it's showing.
+
 ## How the panel works
 
 There's one panel per Rex session, and it's driven by two files in `~/.local/state/mkdw/<session>/`:

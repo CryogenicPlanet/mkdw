@@ -16,6 +16,20 @@ const newlines = (s: string): number => s.split("\n").length - 1;
  * so every block knows exactly where it sits in the source.
  */
 export const splitBlocks = (source: string): ReadonlyArray<Block> => {
+	// YAML frontmatter (skills, docs sites) renders as a yaml code block
+	const fm = /^---\n[\s\S]*?\n---(\n|$)/.exec(source);
+	if (fm !== null) {
+		const head = fm[0].replace(/\n$/, "");
+		const lines = newlines(head) + 1;
+		const yaml = head.split("\n").slice(1, -1).join("\n");
+		const front: Block = { raw: `\`\`\`yaml\n${yaml}\n\`\`\``, start: 1, end: lines, kind: "frontmatter" };
+		const rest = splitBody(source.slice(fm[0].length), lines + 1);
+		return [front, ...rest];
+	}
+	return splitBody(source, 1);
+};
+
+const splitBody = (source: string, firstLine: number): ReadonlyArray<Block> => {
 	const tokens = lexer(source);
 	const { blocks } = tokens.reduce<{ readonly line: number; readonly blocks: ReadonlyArray<Block> }>(
 		(acc, t) => {
@@ -26,7 +40,7 @@ export const splitBlocks = (source: string): ReadonlyArray<Block> => {
 			const block: Block = { raw: body, start: acc.line, end: acc.line + newlines(body), kind: t.type };
 			return { line: next, blocks: [...acc.blocks, block] };
 		},
-		{ line: 1, blocks: [] },
+		{ line: firstLine, blocks: [] },
 	);
 	return blocks;
 };

@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { BunRuntime, BunServices } from "@effect/platform-bun";
-import { Console, Data, Effect, Layer, Option, Path, Stdio, Stream } from "effect";
+import { Console, Data, Effect, FileSystem, Layer, Option, Path, Stdio, Stream } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import * as Comments from "./Comments.ts";
 import * as Control from "./Control.ts";
@@ -28,6 +28,12 @@ Comments (hunk-style review notes; "live" = the panel's pushed doc):
                               add an agent comment on the block at that line
   mkdw comment resolve <id> · mkdw comment rm <id>
 
+Agents:
+  mkdw status [--json]        where this session's panel is and what it shows
+  mkdw skill [show|path]      print the bundled agent skill / its directory
+  mkdw skill install [--dir D] [--force]
+                              symlink the skill into ~/.claude/skills (or D)
+
 Panel options:  --ratio N (default 42)  --focus
 
 Keys: j/k scroll · space/u/d page · g/G top/end · [ ] prev/next file
@@ -54,7 +60,7 @@ const parseArgs = (argv: ReadonlyArray<string>): Args => {
 	};
 	return step(argv, { positional: [], flags: new Map() });
 };
-const VALUED = new Set(["control", "title", "ratio", "delay", "line", "match", "author"]);
+const VALUED = new Set(["control", "title", "ratio", "delay", "line", "match", "author", "dir"]);
 
 const str = (args: Args, name: string): Option.Option<string> => {
 	const v = args.flags.get(name);
@@ -187,8 +193,12 @@ const commentCmd = (args: Args) =>
 		const lines = (yield* workspace.read(file).pipe(Effect.orElseSucceed(() => ""))).split("\n");
 		const line = Option.match(str(args, "match"), {
 			onNone: () => num(args, "line", 1),
-			onSome: (m) => lines.findIndex((l) => l.includes(m)) + 1 || 1,
+			onSome: (m) => lines.findIndex((l) => l.includes(m)) + 1,
 		});
+		if (line < 1 || line > lines.length)
+			return yield* Effect.fail(
+				new UsageError({ message: `no line in ${first} matches ${Option.match(str(args, "match"), { onNone: () => `line ${line}`, onSome: (m) => JSON.stringify(m) })}` }),
+			);
 		const added = yield* store.add({
 			file,
 			line,
@@ -198,6 +208,57 @@ const commentCmd = (args: Args) =>
 			kind: "agent",
 		});
 		return yield* Console.log(formatComment(added));
+	});
+
+/** `mkdw status`: where this session's panel is and what it shows. */
+const status = (args: Args) =>
+	Effect.gen(function* () {
+		const rex = yield* Rex.Rex;
+		const control = yield* Control.Control;
+		const here = yield* Option.match(rex.here, { onNone: () => Effect.fail(new Panel.NotInRex()), onSome: Effect.succeed });
+		const state = yield* control.read(control.dirFor(here.session));
+		const block = Option.getOrUndefined(Option.flatMap(state, (st) => Option.fromUndefinedOr(st.block)));
+		const alive = block === undefined ? false : yield* rex.isAlive(here.session, block);
+		const target = Option.getOrUndefined(Option.map(state, (st) => st.target));
+		const report = { session: here.session, open: alive, block: alive ? block : undefined, target: alive ? target : undefined };
+		if (args.flags.has("json")) return yield* Console.log(JSON.stringify(report));
+		if (!alive || target === undefined) return yield* Console.log("no mkdw panel open");
+		return yield* Console.log(
+			`panel ${block} showing ${target._tag === "File" ? target.path : `live: ${target.title}${target.streaming ? " (streaming)" : ""}`}`,
+		);
+	});
+
+/** `mkdw skill show|path|install`: the agent skill that ships in this repo. */
+const skill = (args: Args) =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const path = yield* Path.Path;
+		const dir = path.resolve(import.meta.dir, "..", "skills", "mkdw");
+		const [action = "show"] = args.positional;
+		switch (action) {
+			case "show":
+				return yield* Console.log(yield* fs.readFileString(path.join(dir, "SKILL.md")));
+			case "path":
+				return yield* Console.log(dir);
+			case "install": {
+				const into = path.resolve(
+					Option.getOrElse(str(args, "dir"), () => path.join(process.env["HOME"] ?? "~", ".claude", "skills")),
+				);
+				const link = path.join(into, "mkdw");
+				const existing = yield* fs.readLink(link).pipe(Effect.option);
+				const present = yield* fs.exists(link);
+				if (Option.isSome(existing) && path.resolve(into, existing.value) === dir)
+					return yield* Console.log(`already installed: ${link} -> ${dir}`);
+				if (present && !args.flags.has("force"))
+					return yield* Effect.fail(new UsageError({ message: `${link} already exists; pass --force to replace it` }));
+				if (present) yield* fs.remove(link, { recursive: true });
+				yield* fs.makeDirectory(into, { recursive: true });
+				yield* fs.symlink(dir, link);
+				return yield* Console.log(`installed: ${link} -> ${dir}`);
+			}
+			default:
+				return yield* Effect.fail(new UsageError({ message: "usage: mkdw skill [show | path | install [--dir D] [--force]]" }));
+		}
 	});
 
 const program = Effect.gen(function* () {
@@ -225,12 +286,20 @@ const program = Effect.gen(function* () {
 			return yield* commentsCmd(sub);
 		case "comment":
 			return yield* commentCmd(sub);
+		case "status":
+			return yield* status(sub);
+		case "skill":
+			return yield* skill(sub);
 		default:
 			// `mkdw README.md` / `mkdw docs/`
 			if (args.positional.length === 1) return yield* runViewer({ input: command, control: Option.none() }).pipe(Effect.scoped);
 			return yield* Effect.fail(new UsageError({ message: `unknown command: ${command}\n\n${USAGE}` }));
 	}
 });
+
+/** Print a user-facing error and exit non-zero, so agents can tell it failed. */
+const fail = (e: { readonly message: string }) =>
+	Console.error(`mkdw: ${e.message}`).pipe(Effect.andThen(Effect.sync(() => void (process.exitCode = 1))));
 
 const AppLayer = Panel.layer.pipe(
 	Layer.provideMerge(Layer.mergeAll(Control.layer, Rex.layer, Workspace.layer, Comments.layer)),
@@ -239,8 +308,6 @@ const AppLayer = Panel.layer.pipe(
 
 program.pipe(
 	Effect.provide(AppLayer),
-	Effect.catchTag("UsageError", (e) => Console.error(e.message)),
-	Effect.catchTag("NotInRex", (e) => Console.error(e.message)),
-	Effect.catchTag("CommentsError", (e) => Console.error(e.message)),
+	Effect.catchTags({ UsageError: fail, NotInRex: fail, CommentsError: fail }),
 	BunRuntime.runMain,
 );
