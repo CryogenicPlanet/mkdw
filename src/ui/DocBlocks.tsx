@@ -39,6 +39,7 @@ export function DocBlocks(props: {
 	readonly showNotes: boolean;
 	readonly streaming: boolean;
 	readonly syntaxStyle: SyntaxStyle;
+	readonly onPick: (index: number) => void;
 }) {
 	const now = Date.now();
 	const last = props.blocks.length - 1;
@@ -51,6 +52,7 @@ export function DocBlocks(props: {
 					<box
 						key={`${i}:${b.start}`}
 						id={blockId(i)}
+						onMouseDown={() => props.onPick(i)}
 						style={{
 							flexDirection: "column",
 							border: ["left"],

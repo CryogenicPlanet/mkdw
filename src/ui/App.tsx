@@ -35,6 +35,12 @@ const fitPath = (rel: string, max: number): string => {
 	return slash === -1 || room < 3 ? `…${rel.slice(-(max - 1))}` : `${rel.slice(0, room)}…/${name}`;
 };
 
+/** First line of a block, stripped of markdown markers, for the composer title. */
+const preview = (raw: string): string => {
+	const first = (raw.split("\n")[0] ?? "").replace(/^[#>*\-+|`\s\d.[\]x]+/, "").trim();
+	return first.length > 28 ? `"${first.slice(0, 27)}…"` : `"${first}"`;
+};
+
 export function App({ store }: { readonly store: Store }) {
 	const s = useSyncExternalStore(store.subscribe, store.get);
 	const { width } = useTerminalDimensions();
@@ -48,7 +54,9 @@ export function App({ store }: { readonly store: Store }) {
 	const [raw, setRaw] = useState(false);
 	const [flash, setFlash] = useState(false);
 	const [cursor, setCursor] = useState(0);
-	const [composing, setComposing] = useState(false);
+	// block index the open comment box targets; undefined = not composing
+	const [composeAt, setComposeAt] = useState<number | undefined>(undefined);
+	const composing = composeAt !== undefined;
 	const [showNotes, setShowNotes] = useState(true);
 
 	const blocks = useMemo(() => splitBlocks(s.content), [s.content]);
@@ -78,8 +86,38 @@ export function App({ store }: { readonly store: Store }) {
 	useEffect(() => {
 		if (s.current._tag !== "Live") scroll.current?.scrollTo(0);
 		setCursor(0);
-		setComposing(false);
+		setComposeAt(undefined);
 	}, [docKey]);
+
+	/** Blocks currently on screen, top to bottom (first fully visible first). */
+	const visibleBlocks = (): ReadonlyArray<number> => {
+		const sb = scroll.current;
+		if (!sb) return [];
+		const top = sb.viewport.y;
+		const bottom = top + sb.viewport.height;
+		const hits = blocks.flatMap((_, i) => {
+			const r = sb.findDescendantById(blockId(i));
+			return r && r.y + r.height > top && r.y < bottom ? [{ i, full: r.y >= top }] : [];
+		});
+		return [...hits.filter((h) => h.full), ...hits.filter((h) => !h.full)].map((h) => h.i).toSorted((a, b) => a - b);
+	};
+
+	/** The cursor if it's on screen, else the first block you can see. */
+	const cursorInView = (): number => {
+		const vis = visibleBlocks();
+		if (vis.length === 0 || vis.includes(at)) return at;
+		const sb = scroll.current;
+		const top = sb?.viewport.y ?? 0;
+		const firstFull = vis.find((i) => (sb?.findDescendantById(blockId(i))?.y ?? -1) >= top);
+		return firstFull ?? vis[0] ?? at;
+	};
+
+	// after scrolling (keys or wheel), drag the cursor along so it never hides off-screen
+	const followScroll = () =>
+		setTimeout(() => {
+			const next = cursorInView();
+			if (next !== at) setCursor(next);
+		}, 30);
 
 	const moveCursor = (i: number) => {
 		const next = Math.min(Math.max(0, i), Math.max(0, blocks.length - 1));
@@ -96,15 +134,19 @@ export function App({ store }: { readonly store: Store }) {
 
 	useKeyboard((key) => {
 		if (composing) {
-			if (key.name === "escape") setComposing(false);
+			if (key.name === "escape") setComposeAt(undefined);
 			return;
 		}
 		const ch = key.sequence;
-		if ((key.name === "j" && key.shift) || ch === "J") return moveCursor(at + 1);
-		if ((key.name === "k" && key.shift) || ch === "K") return moveCursor(at - 1);
+		if ((key.name === "j" && key.shift) || ch === "J") return moveCursor(cursorInView() === at ? at + 1 : cursorInView());
+		if ((key.name === "k" && key.shift) || ch === "K") return moveCursor(cursorInView() === at ? at - 1 : cursorInView());
 		if (ch === "}") return moveCursor(commented.find((i) => i > at) ?? commented[0] ?? at);
 		if (ch === "{") return moveCursor(commented.findLast((i) => i < at) ?? commented.at(-1) ?? at);
-		if (key.name === "c" && !raw && s.docPath !== undefined && blocks.length > 0) return setComposing(true);
+		if (key.name === "c" && !raw && s.docPath !== undefined && blocks.length > 0) {
+			const target = cursorInView();
+			setCursor(target);
+			return setComposeAt(target);
+		}
 		if (key.name === "x") {
 			const ids = (threads.get(at) ?? []).map((c) => c.id);
 			return ids.length > 0 ? store.dispatch({ _tag: "Resolve", ids, resolved: true }) : undefined;
@@ -131,6 +173,8 @@ export function App({ store }: { readonly store: Store }) {
 		else if (key.name === "u") sb.scrollBy(-Math.floor(page / 2));
 		else if (key.name === "g" && !key.shift) sb.scrollTo(0);
 		else if (key.name === "G" || (key.name === "g" && key.shift) || key.name === "end") sb.scrollTo(sb.scrollHeight);
+		else return;
+		followScroll();
 	});
 
 	const sideWidth = Math.min(36, Math.max(22, Math.floor(width * 0.3)));
@@ -192,6 +236,7 @@ export function App({ store }: { readonly store: Store }) {
 
 				<scrollbox
 					ref={scroll}
+					onMouseScroll={followScroll}
 					focused={focus === "doc" && !composing}
 					stickyScroll={live}
 					stickyStart={live ? "bottom" : "top"}
@@ -216,6 +261,10 @@ export function App({ store }: { readonly store: Store }) {
 							showNotes={showNotes}
 							streaming={live && s.streaming}
 							syntaxStyle={syntaxStyle}
+							onPick={(i) => {
+								setCursor(i);
+								setFocus("doc");
+							}}
 						/>
 					)}
 				</scrollbox>
@@ -224,7 +273,7 @@ export function App({ store }: { readonly store: Store }) {
 			{composing ? (
 				<box
 					style={{ height: 3, border: true, borderStyle: "rounded", borderColor: palette.flash, paddingLeft: 1, backgroundColor: palette.side }}
-					title={` comment on line ${blocks[at]?.start ?? 1} · enter save · esc cancel `}
+					title={` comment on ${preview(blocks[composeAt ?? at]?.raw ?? "")} (line ${blocks[composeAt ?? at]?.start ?? 1}) · enter save · esc `}
 					titleAlignment="left"
 				>
 					<input
@@ -235,9 +284,9 @@ export function App({ store }: { readonly store: Store }) {
 						textColor={palette.fg}
 						onSubmit={(submitted: unknown) => {
 							const value = typeof submitted === "string" ? submitted : "";
-							const line = blocks[at]?.start;
+							const line = blocks[composeAt ?? at]?.start;
 							if (line !== undefined && value.trim() !== "") store.dispatch({ _tag: "AddComment", line, body: value });
-							setComposing(false);
+							setComposeAt(undefined);
 						}}
 					/>
 				</box>
