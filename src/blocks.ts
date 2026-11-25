@@ -6,6 +6,8 @@ export interface Block {
 	readonly start: number;
 	readonly end: number;
 	readonly kind: string;
+	/** fenced or indented code: the info string's language and the bare code */
+	readonly code?: { readonly lang: string; readonly text: string };
 }
 
 const newlines = (s: string): number => s.split("\n").length - 1;
@@ -22,7 +24,13 @@ export const splitBlocks = (source: string): ReadonlyArray<Block> => {
 		const head = fm[0].replace(/\n$/, "");
 		const lines = newlines(head) + 1;
 		const yaml = head.split("\n").slice(1, -1).join("\n");
-		const front: Block = { raw: `\`\`\`yaml\n${yaml}\n\`\`\``, start: 1, end: lines, kind: "frontmatter" };
+		const front: Block = {
+			raw: `\`\`\`yaml\n${yaml}\n\`\`\``,
+			start: 1,
+			end: lines,
+			kind: "frontmatter",
+			code: { lang: "yaml", text: yaml },
+		};
 		const rest = splitBody(source.slice(fm[0].length), lines + 1);
 		return [front, ...rest];
 	}
@@ -37,7 +45,9 @@ const splitBody = (source: string, firstLine: number): ReadonlyArray<Block> => {
 			const body = t.raw.replace(/\n+$/, "");
 			const next = acc.line + lines;
 			if (t.type === "space" || body.trim() === "") return { line: next, blocks: acc.blocks };
-			const block: Block = { raw: body, start: acc.line, end: acc.line + newlines(body), kind: t.type };
+			const base = { raw: body, start: acc.line, end: acc.line + newlines(body), kind: t.type };
+			const block: Block =
+				t.type === "code" ? { ...base, code: { lang: (t.lang ?? "").trim().split(/\s+/)[0] ?? "", text: t.text } } : base;
 			return { line: next, blocks: [...acc.blocks, block] };
 		},
 		{ line: firstLine, blocks: [] },

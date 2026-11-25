@@ -57,6 +57,19 @@ mkdw close           # close the panel
 
 Files are watched. Save a change in your editor and the panel re-renders, with a brief flash in the header so you notice. You don't need to reload anything.
 
+## What renders
+
+`mkdw` aims to show everything GitHub-flavored markdown does.
+
+- **Code** gets a framed block with its language in the corner, tree-sitter highlighting, and line numbers once it's five lines or longer. TypeScript and JavaScript highlight out of the box. Bash, Python, JSON, Rust, Go, CSS, HTML, C, Ruby, YAML, TOML, and diff grammars download on first use and are cached after that.
+- **Mermaid** flowcharts, sequence, class, state, ER, and xy diagrams draw as text, so they stay sharp and selectable. Pie, gantt, mindmap, timeline, and gitGraph diagrams render with [pele](https://pele.run) and show as images.
+- **Images** show inline in terminals with the kitty or sixel graphics protocol (Rex, Ghostty, kitty, WezTerm), and as half-block pixels everywhere else.
+- **Alerts** (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) render as colored callouts.
+- **Math** in `$...$`, `$$...$$`, and `math` fences converts to Unicode (`∑ᵢ₌₁ⁿ i = n(n+1)/2`). It's readable, not typeset.
+- Task lists, tables, footnotes, `:emoji:` shortcodes, strikethrough, `<details>`, `<kbd>`, `<sub>`, and `<sup>` all work. HTML comments are hidden.
+
+Hard-wrapped paragraphs reflow to the panel's width, the way GitHub joins soft line breaks.
+
 ## Streaming from an agent
 
 `mkdw push` streams markdown into the panel as it arrives. The panel shows `● streaming`, sticks to the bottom, and switches to `● live` when the input ends.

@@ -308,6 +308,6 @@ const AppLayer = Panel.layer.pipe(
 
 program.pipe(
 	Effect.provide(AppLayer),
-	Effect.catchTags({ UsageError: fail, NotInRex: fail, CommentsError: fail }),
+	Effect.catchTags({ UsageError: fail, NotInRex: fail, CommentsError: fail, RexError: fail, ControlError: fail }),
 	BunRuntime.runMain,
 );

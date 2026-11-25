@@ -8,7 +8,9 @@ export type Current =
 export interface ViewState {
 	/** directory the sidebar lists */
 	readonly root: string;
-	/** markdown files under root, relative */
+	/** true when a directory was opened; false shows a single file with no sidebar */
+	readonly browse: boolean;
+	/** markdown files under root, relative (empty unless browsing) */
 	readonly files: ReadonlyArray<string>;
 	readonly current: Current;
 	readonly content: string;

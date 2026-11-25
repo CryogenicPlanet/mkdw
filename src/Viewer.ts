@@ -1,10 +1,11 @@
-import { createCliRenderer } from "@opentui/core";
+import { addDefaultParsers, createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { createElement } from "react";
 import { Data, Deferred, Effect, Option, Path, Queue, Stream, SubscriptionRef } from "effect";
 import { Comments } from "./Comments.ts";
 import { Control, type Target } from "./Control.ts";
 import { App } from "./ui/App.tsx";
+import { parsers } from "./ui/parsers.ts";
 import type { Current, Intent, Store, ViewState } from "./ViewState.ts";
 import { Workspace } from "./Workspace.ts";
 
@@ -34,9 +35,13 @@ export const runViewer = (opts: ViewerOptions) =>
 					: undefined;
 
 		const root = yield* workspace.resolveRoot(opts.input);
+		const browseArgv = root.initial === undefined && Option.isNone(opts.control);
 		const initial: ViewState = {
 			root: root.dir,
-			files: yield* workspace.list(root.dir),
+			// a single file needs no listing, so opening one never scans the disk. A panel's
+			// argv is just its cwd; what it shows (and whether to browse) comes from `mkdw panel`.
+			browse: browseArgv,
+			files: browseArgv ? yield* workspace.list(root.dir) : [],
 			current: root.initial === undefined ? { _tag: "Empty" } : { _tag: "File", path: root.initial },
 			content: "",
 			baseline: "",
@@ -71,15 +76,10 @@ export const runViewer = (opts: ViewerOptions) =>
 				const loaded = yield* contentFor(current);
 				const docPath = docPathOf(current);
 				const docComments = docPath === undefined ? [] : yield* comments.list(docPath);
-				// a file outside the current root re-roots the sidebar at its directory
-				const reroot =
-					current._tag === "File" && path.relative((yield* SubscriptionRef.get(state)).root, current.path).startsWith("..")
-						? Option.some(path.dirname(current.path))
-						: Option.none<string>();
-				const files = yield* Option.match(reroot, {
-					onNone: () => Effect.succeed(Option.none<ReadonlyArray<string>>()),
-					onSome: (dir) => workspace.list(dir).pipe(Effect.map(Option.some)),
-				});
+				// a file outside the browsed directory drops back to single-file mode
+				const prev = yield* SubscriptionRef.get(state);
+				const leave =
+					current._tag === "File" && (!prev.browse || path.relative(prev.root, current.path).startsWith(".."));
 				yield* SubscriptionRef.update(state, (s) => ({
 					...s,
 					...loaded,
@@ -88,16 +88,15 @@ export const runViewer = (opts: ViewerOptions) =>
 					docPath,
 					comments: docComments,
 					// re-showing the same file (e.g. `mkdw panel` after an edit) keeps the diff base
-					baseline: sameDoc(s.current, current) ? s.baseline : loaded.content,
-					root: Option.getOrElse(reroot, () => s.root),
-					files: Option.getOrElse(files, () => s.files),
+					baseline: sameDoc(s.current, current) && s.revision > 0 ? s.baseline : loaded.content,
+					...(leave && current._tag === "File" ? { root: path.dirname(current.path), browse: false, files: [] } : {}),
 					revision: s.revision + 1,
 				}));
 			});
 
 		const reloadCurrent = Effect.gen(function* () {
 			const s = yield* SubscriptionRef.get(state);
-			const files = yield* workspace.list(s.root);
+			const files = s.browse ? yield* workspace.list(s.root) : s.files;
 			const loaded = s.current._tag === "File" ? yield* contentFor(s.current) : { content: s.content, error: s.error };
 			yield* SubscriptionRef.update(state, (prev) => ({
 				...prev,
@@ -128,7 +127,7 @@ export const runViewer = (opts: ViewerOptions) =>
 				const r = yield* workspace.resolveRoot(p);
 				if (r.initial !== undefined) return yield* show({ _tag: "File", path: r.initial });
 				const files = yield* workspace.list(r.dir);
-				yield* SubscriptionRef.update(state, (s) => ({ ...s, root: r.dir, files }));
+				yield* SubscriptionRef.update(state, (s) => ({ ...s, root: r.dir, browse: true, files }));
 				const head = files[0];
 				return yield* show(head === undefined ? { _tag: "Empty" } : { _tag: "File", path: path.join(r.dir, head) });
 			});
@@ -138,11 +137,20 @@ export const runViewer = (opts: ViewerOptions) =>
 			return target._tag === "File" ? openPath(target.path) : show({ _tag: "Live", title: target.title }, target.streaming);
 		}
 
-		// watch the sidebar root (switching when it changes) and reload on edits
+		// watch the browsed directory, or just the open file, and reload on edits
 		yield* SubscriptionRef.changes(state).pipe(
-			Stream.map((s) => s.root),
+			Stream.map((s) =>
+				s.browse ? `dir:${s.root}` : s.current._tag === "File" ? `file:${s.current.path}` : "none",
+			),
 			Stream.changes,
-			Stream.switchMap((dir) => workspace.changes(dir).pipe(Stream.mapEffect(() => reloadCurrent))),
+			Stream.switchMap((key) =>
+				(key.startsWith("dir:")
+					? workspace.changes(key.slice(4))
+					: key.startsWith("file:")
+						? workspace.fileChanges(key.slice(5))
+						: Stream.empty
+				).pipe(Stream.mapEffect(() => reloadCurrent)),
+			),
 			Stream.runDrain,
 			Effect.forkScoped,
 		);
@@ -232,6 +240,8 @@ export const runViewer = (opts: ViewerOptions) =>
 		});
 		yield* SubscriptionRef.changes(state).pipe(Stream.runForEach(store.publish), Effect.forkScoped);
 
+		// register before the first code block asks the tree-sitter client for a grammar
+		yield* Effect.sync(() => addDefaultParsers([...parsers]));
 		const renderer = yield* Effect.acquireRelease(
 			Effect.tryPromise({
 				try: () => createCliRenderer({ exitOnCtrlC: false, useMouse: true }),

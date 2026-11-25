@@ -1,11 +1,11 @@
 import { SyntaxStyle, type ScrollBoxRenderable, type SelectOption } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createTwoFilesPatch } from "diff";
 import { blockAt, splitBlocks } from "../blocks.ts";
 import { reanchor, type Comment } from "../Comments.ts";
 import type { Store, ViewState } from "../ViewState.ts";
-import { blockId, DocBlocks } from "./DocBlocks.tsx";
+import { blockId, DOC_ID, DocBlocks } from "./DocBlocks.tsx";
 import { palette, styles } from "./theme.ts";
 
 type Focus = "sidebar" | "doc";
@@ -108,35 +108,40 @@ export function App({ store }: { readonly store: Store }) {
 		setComposeAt(undefined);
 	}, [docKey]);
 
-	/** Blocks currently on screen, top to bottom (first fully visible first). */
-	const visibleBlocks = (): ReadonlyArray<number> => {
+	/** Blocks on screen, in order, read straight off the block column (no tree searches). */
+	const visibleBlocks = (): ReadonlyArray<{ readonly i: number; readonly full: boolean }> => {
 		const sb = scroll.current;
+		const rows = sb?.findDescendantById(DOC_ID)?.getChildren() ?? [];
 		if (!sb) return [];
 		const top = sb.viewport.y;
 		const bottom = top + sb.viewport.height;
-		const hits = blocks.flatMap((_, i) => {
-			const r = sb.findDescendantById(blockId(i));
-			return r && r.y + r.height > top && r.y < bottom ? [{ i, full: r.y >= top }] : [];
-		});
-		return [...hits.filter((h) => h.full), ...hits.filter((h) => !h.full)].map((h) => h.i).toSorted((a, b) => a - b);
+		return rows.flatMap((r, i) => (r.height > 0 && r.y + r.height > top && r.y < bottom ? [{ i, full: r.y >= top }] : []));
 	};
 
-	/** The cursor if it's on screen, else the first block you can see. */
+	/** The cursor if it's on screen, else the first block you can see in full. */
 	const cursorInView = (): number => {
 		const vis = visibleBlocks();
-		if (vis.length === 0 || vis.includes(at)) return at;
-		const sb = scroll.current;
-		const top = sb?.viewport.y ?? 0;
-		const firstFull = vis.find((i) => (sb?.findDescendantById(blockId(i))?.y ?? -1) >= top);
-		return firstFull ?? vis[0] ?? at;
+		if (vis.length === 0 || vis.some((v) => v.i === at)) return at;
+		return (vis.find((v) => v.full) ?? vis[0])?.i ?? at;
 	};
 
-	// after scrolling (keys or wheel), drag the cursor along so it never hides off-screen
-	const followScroll = () =>
-		setTimeout(() => {
+	// after scrolling (keys or wheel) settles, drag the cursor along so it never hides
+	// off-screen. Debounced: a burst of wheel events does this work once, not per tick.
+	const followTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const atRef = useRef(at);
+	atRef.current = at;
+	const followScroll = () => {
+		clearTimeout(followTimer.current);
+		followTimer.current = setTimeout(() => {
 			const next = cursorInView();
-			if (next !== at) setCursor(next);
-		}, 30);
+			if (next !== atRef.current) setCursor(next);
+		}, 120);
+	};
+
+	const pick = useCallback((i: number) => {
+		setCursor(i);
+		setFocus("doc");
+	}, []);
 
 	const moveCursor = (i: number) => {
 		const next = Math.min(Math.max(0, i), Math.max(0, blocks.length - 1));
@@ -316,10 +321,8 @@ export function App({ store }: { readonly store: Store }) {
 							showNotes={showNotes}
 							streaming={live && s.streaming}
 							syntaxStyle={syntaxStyle}
-							onPick={(i) => {
-								setCursor(i);
-								setFocus("doc");
-							}}
+							docDir={s.docPath === undefined ? undefined : s.docPath.slice(0, s.docPath.lastIndexOf("/"))}
+							onPick={pick}
 						/>
 					)}
 				</scrollbox>

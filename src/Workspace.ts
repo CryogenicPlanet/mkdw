@@ -1,8 +1,9 @@
 import { Context, Effect, FileSystem, Layer, Path, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const MARKDOWN = /\.(md|markdown|mdx|mdown)$/i;
-const IGNORED = /(^|\/)(node_modules|\.git|\.jj|dist|build|repos|target|\.next|\.cache)(\/|$)/;
-const MAX_FILES = 2000;
+const IGNORED = /(^|\/)(node_modules|\.git|\.jj|dist|build|repos|target|\.next|\.cache|vendor)(\/|$)/;
+const MAX_FILES = 500;
 
 export interface Root {
 	/** absolute directory the sidebar lists */
@@ -14,6 +15,7 @@ export interface Root {
 const make = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
+	const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
 	const resolveRoot = (input: string): Effect.Effect<Root> =>
 		Effect.gen(function* () {
@@ -23,9 +25,30 @@ const make = Effect.gen(function* () {
 			return isDir ? { dir: abs, initial: undefined } : { dir: path.dirname(abs), initial: abs };
 		});
 
+	/** Tracked and untracked-but-not-ignored markdown files, via git. Fails outside a repo. */
+	const gitList = (dir: string) =>
+		spawner
+			.string(
+				ChildProcess.make(
+					"git",
+					["-C", dir, "ls-files", "--cached", "--others", "--exclude-standard", "--deduplicate", "-z", "--", "*.md", "*.markdown", "*.mdx", "*.mdown"],
+				),
+			)
+			.pipe(Effect.map((out) => out.split("\0").filter((f) => f !== "")));
+
+	/** Fallback for plain directories: a recursive walk, skipping the usual heavy dirs. */
+	const walkList = (dir: string) => fs.readDirectory(dir, { recursive: true });
+
+	const inRepo = (dir: string): Effect.Effect<boolean> =>
+		spawner.exitCode(ChildProcess.make("git", ["-C", dir, "rev-parse", "--is-inside-work-tree"])).pipe(
+			Effect.map((code) => code === 0),
+			Effect.orElseSucceed(() => false),
+		);
+
 	/** Markdown files under `dir`, relative, README first, then by path. */
 	const list = (dir: string): Effect.Effect<ReadonlyArray<string>> =>
-		fs.readDirectory(dir, { recursive: true }).pipe(
+		inRepo(dir).pipe(
+			Effect.flatMap((repo): Effect.Effect<ReadonlyArray<string>, unknown> => (repo ? gitList(dir) : walkList(dir))),
 			Effect.map((entries) =>
 				entries
 					.filter((e) => MARKDOWN.test(e) && !IGNORED.test(e))
@@ -38,16 +61,31 @@ const make = Effect.gen(function* () {
 	const read = (file: string): Effect.Effect<string, string> =>
 		fs.readFileString(file).pipe(Effect.mapError((e) => e.message));
 
-	/** Ticks whenever something under `dir` changes (debounced). */
+	/** Ticks whenever a markdown file under `dir` changes (debounced). */
 	const changes = (dir: string): Stream.Stream<void> =>
 		fs.watch(dir, { recursive: true }).pipe(
-			Stream.filter((e) => !IGNORED.test(path.relative(dir, e.path))),
+			Stream.filter((e) => {
+				const rel = path.relative(dir, e.path);
+				return MARKDOWN.test(rel) && !IGNORED.test(rel);
+			}),
 			Stream.debounce("60 millis"),
 			Stream.as(undefined),
 			Stream.catchCause(() => Stream.empty),
 		);
 
-	return { resolveRoot, list, read, changes } as const;
+	/**
+	 * Ticks whenever `file` changes. Watches the parent directory, not the file,
+	 * because editors often save by writing a new file and renaming it over the old one.
+	 */
+	const fileChanges = (file: string): Stream.Stream<void> =>
+		fs.watch(path.dirname(file)).pipe(
+			Stream.filter((e) => path.basename(e.path) === path.basename(file)),
+			Stream.debounce("60 millis"),
+			Stream.as(undefined),
+			Stream.catchCause(() => Stream.empty),
+		);
+
+	return { resolveRoot, list, read, changes, fileChanges } as const;
 });
 
 const rank = (rel: string): number => {
